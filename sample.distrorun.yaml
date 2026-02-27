@@ -1,0 +1,26 @@
+version: "1.0"
+name: my-alpine-server
+
+distro:
+  base: alpine
+
+packages:
+  - nginx
+  - vim
+  - curl
+  - openssh
+
+users:
+  - name: root
+    password: toor
+  - name: charif
+    password: charif123
+
+services:
+  enable:
+    - nginx
+    - sshd
+    - networking
+
+build:
+  sbom: true
