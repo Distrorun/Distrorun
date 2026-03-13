@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/talfaza/distrorun/internal/bootloader"
+	"github.com/talfaza/distrorun/internal/ui"
 )
 
 // Build creates the final bootable ISO image.
@@ -15,7 +16,7 @@ import (
 func Build(rootfsPath, stagingDir, outputPath string) error {
 	// Step 1: Create squashfs image from rootfs
 	squashfsPath := filepath.Join(stagingDir, "rootfs.squashfs")
-	fmt.Println("  Creating squashfs image...")
+	ui.SubStep("Creating squashfs image (xz compression)...")
 
 	cmd := exec.Command("mksquashfs", rootfsPath, squashfsPath,
 		"-comp", "xz", "-no-xattrs", "-noappend")
@@ -27,11 +28,11 @@ func Build(rootfsPath, stagingDir, outputPath string) error {
 
 	// Print squashfs size
 	if info, err := os.Stat(squashfsPath); err == nil {
-		fmt.Printf("  Squashfs size: %.1f MB\n", float64(info.Size())/1024/1024)
+		ui.SizeInfo("Squashfs", float64(info.Size())/1024/1024)
 	}
 
 	// Step 2: Build ISO with xorriso
-	fmt.Println("  Building ISO image...")
+	ui.SubStep("Assembling ISO image...")
 
 	xorrisoArgs := []string{
 		"-as", "mkisofs",
@@ -60,7 +61,7 @@ func Build(rootfsPath, stagingDir, outputPath string) error {
 
 	// Print ISO size
 	if info, err := os.Stat(outputPath); err == nil {
-		fmt.Printf("  ISO size: %.1f MB\n", float64(info.Size())/1024/1024)
+		ui.SizeInfo("ISO", float64(info.Size())/1024/1024)
 	}
 
 	return nil
@@ -78,7 +79,7 @@ func CheckHostDeps() error {
 
 	// Check for syslinux files
 	if bootloader.IsohdpfxPath() == "" {
-		fmt.Println("  Warning: isohdpfx.bin not found — ISO will not be isohybrid (USB bootable)")
+		ui.Warn("isohdpfx.bin not found — ISO will not be USB bootable")
 	}
 
 	return nil

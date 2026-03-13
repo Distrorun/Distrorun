@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/talfaza/distrorun/internal/ui"
 )
 
 // SPDXDocument represents a minimal SPDX 2.3 JSON document.
@@ -54,7 +56,7 @@ type SPDXRelationship struct {
 
 // Generate creates an SPDX 2.3 JSON SBOM from the packages installed in the rootfs.
 func Generate(rootfsPath, configName, outputPath string) error {
-	fmt.Println("  Scanning installed packages...")
+	ui.SubStep("Scanning installed packages...")
 
 	// Get list of installed packages with versions
 	cmd := exec.Command("chroot", rootfsPath, "apk", "info", "-v")
@@ -138,7 +140,8 @@ func Generate(rootfsPath, configName, outputPath string) error {
 		return fmt.Errorf("writing SBOM: %w", err)
 	}
 
-	fmt.Printf("  SBOM written to %s (%d packages)\n", outputPath, len(lines))
+	ui.SubStep(fmt.Sprintf("SBOM written with %d packages", len(lines)))
+	ui.InfoPath("SBOM", outputPath)
 	return nil
 }
 

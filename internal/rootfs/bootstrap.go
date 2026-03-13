@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/talfaza/distrorun/internal/ui"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +23,8 @@ var alpineBasePackages = []string{
 	"mkinitfs",
 	"openrc",
 	"e2fsprogs",
+	"bash",
+	"shadow",
 }
 
 // minirootfsURL returns the download URL for the latest Alpine minirootfs.
@@ -90,6 +93,14 @@ func Bootstrap(name string) (*Rootfs, error) {
 		return nil, err
 	}
 
+	// Step 5b: Configure networking (loopback + DHCP on eth0)
+	if err := r.configureNetwork(name); err != nil {
+		return nil, err
+	}
+
+	// Step 5c: Write custom /etc/os-release
+	r.configureOSRelease(name)
+
 	// Step 6: Configure mkinitfs for live CD and generate initramfs
 	if err := r.configureMkinitfs(); err != nil {
 		return nil, err
@@ -120,7 +131,8 @@ func (r *Rootfs) downloadMinirootfs(dest string) error {
 
 	// Fetch the releases index to find the minirootfs filename
 	releasesURL := baseURL + "/latest-releases.yaml"
-	fmt.Printf("  Fetching release index from %s\n", releasesURL)
+	ui.SubStep("Fetching release index...")
+	ui.URL(releasesURL)
 
 	resp, err := http.Get(releasesURL)
 	if err != nil {
@@ -155,7 +167,8 @@ func (r *Rootfs) downloadMinirootfs(dest string) error {
 	}
 
 	tarballURL := baseURL + "/" + filename
-	fmt.Printf("  Downloading %s\n", tarballURL)
+	ui.SubStep("Downloading minirootfs...")
+	ui.URL(tarballURL)
 
 	resp2, err := http.Get(tarballURL)
 	if err != nil {
@@ -182,7 +195,7 @@ func (r *Rootfs) downloadMinirootfs(dest string) error {
 
 // extractTarball extracts the minirootfs tarball into the rootfs directory.
 func (r *Rootfs) extractTarball(tarball string) error {
-	fmt.Println("  Extracting minirootfs...")
+	ui.SubStep("Extracting minirootfs...")
 	cmd := exec.Command("tar", "xzf", tarball, "-C", r.Path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -194,7 +207,7 @@ func (r *Rootfs) extractTarball(tarball string) error {
 
 // setupChrootMounts binds /dev, /proc, /sys into the rootfs for chroot operations.
 func (r *Rootfs) setupChrootMounts() error {
-	fmt.Println("  Setting up chroot mounts...")
+	ui.SubStep("Setting up chroot mounts (proc, dev, sys)...")
 
 	mounts := []struct {
 		fstype string
@@ -244,7 +257,7 @@ func (r *Rootfs) copyResolv() error {
 
 // installBaseSystem updates apk repositories and installs the base system packages.
 func (r *Rootfs) installBaseSystem() error {
-	fmt.Println("  Installing base system packages...")
+	ui.SubStep("Installing base system packages...")
 
 	// Set up repositories
 	reposPath := filepath.Join(r.Path, "etc", "apk", "repositories")
@@ -276,13 +289,69 @@ func (r *Rootfs) installBaseSystem() error {
 	return nil
 }
 
+// configureNetwork sets up /etc/network/interfaces and enables networking at boot.
+func (r *Rootfs) configureNetwork(name string) error {
+	ui.SubStep("Configuring network (DHCP on eth0)...")
+
+	// Write /etc/network/interfaces
+	interfaces := `auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+`
+	ifacePath := filepath.Join(r.Path, "etc", "network", "interfaces")
+	if err := os.MkdirAll(filepath.Dir(ifacePath), 0755); err != nil {
+		return fmt.Errorf("creating network dir: %w", err)
+	}
+	if err := os.WriteFile(ifacePath, []byte(interfaces), 0644); err != nil {
+		return fmt.Errorf("writing interfaces: %w", err)
+	}
+
+	// Write hostname from config name
+	hostnamePath := filepath.Join(r.Path, "etc", "hostname")
+	os.WriteFile(hostnamePath, []byte(name+"\n"), 0644)
+
+	// Enable networking and hostname services
+	for _, svc := range []string{"networking", "hostname"} {
+		cmd := exec.Command("chroot", r.Path, "rc-update", "add", svc, "boot")
+		_ = cmd.Run() // best-effort
+	}
+
+	return nil
+}
+
+// configureOSRelease writes a custom /etc/os-release, /etc/issue, and /etc/motd.
+func (r *Rootfs) configureOSRelease(name string) {
+	ui.SubStep("Branding OS as \"" + name + "\"...")
+
+	id := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+
+	// /etc/os-release — used by hostnamectl, neofetch, etc.
+	osRelease := fmt.Sprintf(`NAME="%s"
+ID=%s
+PRETTY_NAME="%s (built with DistroRun)"
+HOME_URL="https://github.com/talfaza/distrorun"
+BUG_REPORT_URL="https://github.com/talfaza/distrorun/issues"
+`, name, id, name)
+	os.WriteFile(filepath.Join(r.Path, "etc", "os-release"), []byte(osRelease), 0644)
+
+	// /etc/issue — the login banner (what shows "Welcome to ...")
+	issue := fmt.Sprintf("Welcome to %s (built with DistroRun)\nKernel \\r on \\m (\\l)\n\n", name)
+	os.WriteFile(filepath.Join(r.Path, "etc", "issue"), []byte(issue), 0644)
+
+	// /etc/motd — message after login
+	motd := fmt.Sprintf("\n  %s — Powered by DistroRun\n\n", name)
+	os.WriteFile(filepath.Join(r.Path, "etc", "motd"), []byte(motd), 0644)
+}
+
 // configureMkinitfs sets up mkinitfs.conf with features needed for live CD boot.
 func (r *Rootfs) configureMkinitfs() error {
-	fmt.Println("  Configuring mkinitfs for live CD...")
+	ui.SubStep("Configuring mkinitfs for live CD...")
 
 	// Features needed for live CD: cdrom, scsi, squashfs, loop, virtio
 	confPath := filepath.Join(r.Path, "etc", "mkinitfs", "mkinitfs.conf")
-	features := `features="ata base cdrom scsi squashfs usb virtio loop"
+	features := `features="ata base cdrom scsi squashfs usb virtio loop network"
 `
 	if err := os.MkdirAll(filepath.Dir(confPath), 0755); err != nil {
 		return fmt.Errorf("creating mkinitfs dir: %w", err)
@@ -296,7 +365,7 @@ func (r *Rootfs) configureMkinitfs() error {
 
 // generateInitramfs creates the initramfs using mkinitfs inside the chroot.
 func (r *Rootfs) generateInitramfs() error {
-	fmt.Println("  Generating initramfs...")
+	ui.SubStep("Generating initramfs...")
 
 	// Find kernel version from /lib/modules/
 	modulesDir := filepath.Join(r.Path, "lib", "modules")

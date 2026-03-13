@@ -9,63 +9,41 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/talfaza/distrorun/internal/bootloader"
 	"github.com/talfaza/distrorun/internal/config"
 	"github.com/talfaza/distrorun/internal/iso"
 	"github.com/talfaza/distrorun/internal/rootfs"
 	"github.com/talfaza/distrorun/internal/sbom"
+	"github.com/talfaza/distrorun/internal/ui"
 )
 
 const version = "0.1.0"
 
-// ANSI color helpers
-func bold(s string) string   { return "\033[1m" + s + "\033[0m" }
-func cyan(s string) string   { return "\033[36m" + s + "\033[0m" }
-func green(s string) string  { return "\033[32m" + s + "\033[0m" }
-func red(s string) string    { return "\033[31m" + s + "\033[0m" }
-func yellow(s string) string { return "\033[33m" + s + "\033[0m" }
-
-func stepHeader(step, total int, msg string) {
-	fmt.Printf("\n%s %s\n", bold(cyan(fmt.Sprintf("[%d/%d]", step, total))), bold(msg))
-}
-
-func fatal(msg string, err error) {
-	fmt.Fprintf(os.Stderr, "\n%s %s: %v\n", bold(red("ERROR")), msg, err)
-	os.Exit(1)
-}
-
 func main() {
 	if len(os.Args) < 2 {
-		printUsage()
+		ui.PrintUsage(version)
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
 	case "build":
 		runBuild(os.Args[2:])
+	case "test":
+		runTest(os.Args[2:])
 	case "version":
-		fmt.Printf("distrorun %s\n", version)
+		ui.PrintBanner(version)
 	case "help", "--help", "-h":
-		printUsage()
+		ui.PrintUsage(version)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
-		printUsage()
+		ui.PrintUsage(version)
 		os.Exit(1)
 	}
-}
-
-func printUsage() {
-	fmt.Println(bold("DistroRun") + " — Custom Linux OS Builder")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  distrorun build <config.yaml> [-o output.iso]")
-	fmt.Println("  distrorun version")
-	fmt.Println("  distrorun help")
-	fmt.Println()
-	fmt.Println("The build command must be run as root (uses chroot, mount).")
 }
 
 func runBuild(args []string) {
@@ -80,99 +58,101 @@ func runBuild(args []string) {
 
 	configPath := fs.Arg(0)
 
+	// Print banner
+	buildStart := time.Now()
+	ui.PrintBanner(version)
+
 	// Prelude: check root
 	if os.Getuid() != 0 {
-		fmt.Fprintln(os.Stderr, bold(red("ERROR"))+" This command must be run as root (sudo distrorun build ...)")
-		os.Exit(1)
+		ui.Error("This command must be run as root", fmt.Errorf("run with: sudo distrorun build ..."))
 	}
-
-	// Determine total steps
-	totalSteps := 8 // base steps without SBOM
-	// We'll adjust after parsing config
 
 	// ── Step 1: Parse config ─────────────────────────────────────────────
-	stepHeader(1, 9, "Parsing configuration...")
+	ui.StepHeader(1, 9, "Parsing configuration...")
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		fatal("Configuration error", err)
+		ui.Error("Configuration error", err)
 	}
-	fmt.Printf("  Config: %s (base: %s)\n", green(cfg.Name), cfg.Distro.Base)
-	fmt.Printf("  Packages: %s\n", green(strings.Join(cfg.Packages, ", ")))
-	fmt.Printf("  Users: %s\n", green(fmt.Sprintf("%d", len(cfg.Users))))
+	ui.Info("Config", fmt.Sprintf("%s (base: %s)", cfg.Name, cfg.Distro.Base))
+	ui.Info("Packages", strings.Join(cfg.Packages, ", "))
+	ui.Info("Users", fmt.Sprintf("%d defined", len(cfg.Users)))
 
+	totalSteps := 8
 	if cfg.SBOMEnabled() {
 		totalSteps = 9
-	} else {
-		totalSteps = 8
 	}
 
-	// Determine output path
+	// Determine output path — override with -o, default to <name>.iso
 	outputPath := *output
 	if outputPath == "" {
 		outputPath = cfg.Name + ".iso"
 	}
 
 	// ── Step 2: Check host dependencies ──────────────────────────────────
-	stepHeader(2, totalSteps, "Checking host dependencies...")
+	ui.StepHeader(2, totalSteps, "Checking host dependencies...")
 	if err := iso.CheckHostDeps(); err != nil {
-		fatal("Missing dependency", err)
+		ui.Error("Missing dependency", err)
 	}
-	fmt.Println("  " + green("✓") + " All dependencies found")
+	ui.Success("All dependencies found")
 
 	// ── Step 3: Bootstrap rootfs ─────────────────────────────────────────
-	stepHeader(3, totalSteps, "Bootstrapping Alpine rootfs...")
+	ui.StepHeader(3, totalSteps, "Bootstrapping Alpine rootfs...")
 	rfs, err := rootfs.Bootstrap(cfg.Name)
 	if err != nil {
-		fatal("Bootstrap failed", err)
+		ui.Error("Bootstrap failed", err)
 	}
 	defer rfs.Cleanup(true)
-	fmt.Printf("  Rootfs at: %s\n", rfs.Path)
+	ui.InfoPath("Rootfs", rfs.Path)
 
 	// ── Step 4: Install packages ─────────────────────────────────────────
-	stepHeader(4, totalSteps, "Installing packages...")
+	ui.StepHeader(4, totalSteps, "Installing packages...")
 	if err := rfs.InstallPackages(cfg.Packages); err != nil {
-		fatal("Package installation failed", err)
+		ui.Error("Package installation failed", err)
 	}
-	fmt.Println("  " + green("✓") + " Packages installed")
+	ui.Success("Packages installed")
 
 	// ── Step 5: Setup users ──────────────────────────────────────────────
-	stepHeader(5, totalSteps, "Setting up users...")
+	ui.StepHeader(5, totalSteps, "Setting up users...")
 	if err := rfs.SetupUsers(cfg.Users); err != nil {
-		fatal("User setup failed", err)
+		ui.Error("User setup failed", err)
 	}
-	fmt.Println("  " + green("✓") + " Users configured (passwords hashed)")
+	// Set hostname to the first user's name
+	if len(cfg.Users) > 0 {
+		hostname := cfg.Users[0].Name
+		os.WriteFile(filepath.Join(rfs.Path, "etc", "hostname"), []byte(hostname+"\n"), 0644)
+		ui.Info("Hostname", hostname)
+	}
+	ui.Success("Users configured (passwords hashed with SHA-512)")
 
 	// ── Step 6: Enable services ──────────────────────────────────────────
-	stepHeader(6, totalSteps, "Enabling services...")
+	ui.StepHeader(6, totalSteps, "Enabling services...")
 	if cfg.Services != nil {
 		if err := rfs.EnableServices(cfg.Services.Enable); err != nil {
-			fatal("Service enablement failed", err)
+			ui.Error("Service enablement failed", err)
 		}
-	} else {
-		fmt.Println("  No services to enable")
 	}
-	fmt.Println("  " + green("✓") + " Services configured")
+	ui.Success("Services configured")
 
 	// Track current step
 	currentStep := 7
 
 	// ── Step 7 (optional): Generate SBOM ─────────────────────────────────
 	if cfg.SBOMEnabled() {
-		stepHeader(currentStep, totalSteps, "Generating SBOM (SPDX JSON)...")
+		ui.StepHeader(currentStep, totalSteps, "Generating SBOM (SPDX JSON)...")
 		sbomPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + "-sbom.spdx.json"
 		if err := sbom.Generate(rfs.Path, cfg.Name, sbomPath); err != nil {
-			fatal("SBOM generation failed", err)
+			ui.Error("SBOM generation failed", err)
 		}
-		fmt.Println("  " + green("✓") + " SBOM generated")
+		ui.Success("SBOM generated")
 		currentStep++
 	}
 
 	// ── Step N-1: Setup bootloader ───────────────────────────────────────
-	stepHeader(currentStep, totalSteps, "Setting up bootloader...")
+	ui.StepHeader(currentStep, totalSteps, "Setting up bootloader...")
 
 	stagingDir := filepath.Join(rfs.WorkDir, "staging")
 	if err := os.MkdirAll(stagingDir, 0755); err != nil {
-		fatal("Creating staging directory", err)
+		ui.Error("Creating staging directory", err)
 	}
 
 	// Unmount chroot bind mounts before cleaning — CleanupRootfs removes /dev/*
@@ -183,25 +163,107 @@ func runBuild(args []string) {
 	rfs.CleanupRootfs()
 
 	if err := bootloader.Setup(rfs.Path, stagingDir); err != nil {
-		fatal("Bootloader setup failed", err)
+		ui.Error("Bootloader setup failed", err)
 	}
-	fmt.Println("  " + green("✓") + " Bootloader configured")
+	ui.Success("Bootloader configured")
 	currentStep++
 
 	// ── Step N: Build ISO ────────────────────────────────────────────────
-	stepHeader(currentStep, totalSteps, "Building ISO...")
+	ui.StepHeader(currentStep, totalSteps, "Building ISO...")
 	if err := iso.Build(rfs.Path, stagingDir, outputPath); err != nil {
-		fatal("ISO build failed", err)
+		ui.Error("ISO build failed", err)
 	}
 
 	// ── Done ─────────────────────────────────────────────────────────────
-	fmt.Println()
-	fmt.Println(bold(green("✓ Build complete!")))
-	fmt.Printf("  ISO: %s\n", bold(outputPath))
+	sbomPath := ""
 	if cfg.SBOMEnabled() {
-		sbomPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + "-sbom.spdx.json"
-		fmt.Printf("  SBOM: %s\n", bold(sbomPath))
+		sbomPath = strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + "-sbom.spdx.json"
 	}
-	fmt.Println()
-	fmt.Println(yellow("  Test with: qemu-system-x86_64 -cdrom " + outputPath + " -m 512"))
+	qemuCmd := "qemu-system-x86_64 -cdrom " + outputPath + " -m 512"
+	elapsed := time.Since(buildStart)
+	ui.PrintSummary(outputPath, sbomPath, qemuCmd, elapsed)
+}
+
+func runTest(args []string) {
+	fs := flag.NewFlagSet("test", flag.ExitOnError)
+	ram := fs.String("r", "512", "RAM in MB (default: 512)")
+	disk := fs.String("d", "", "Create and attach a virtual disk of this size (e.g. 8G)")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: distrorun test <iso-file> [-r RAM_MB] [-d DISK_SIZE]")
+		os.Exit(1)
+	}
+
+	isoPath := fs.Arg(0)
+	ui.PrintBanner(version)
+
+	// Check ISO exists
+	if _, err := os.Stat(isoPath); os.IsNotExist(err) {
+		ui.Error("ISO not found", fmt.Errorf("%s does not exist", isoPath))
+	}
+
+	// Check QEMU is installed
+	qemuBin, err := exec.LookPath("qemu-system-x86_64")
+	if err != nil {
+		ui.Error("QEMU not found", fmt.Errorf("install with: sudo dnf install qemu-system-x86 (or sudo apt install qemu-system-x86)"))
+	}
+
+	ui.StepHeader(1, 1, "Launching QEMU...")
+	ui.Info("ISO", isoPath)
+	ui.Info("RAM", *ram+" MB")
+
+	qemuArgs := []string{
+		"-cdrom", isoPath,
+		"-m", *ram,
+		"-boot", "d",
+		"-enable-kvm",
+	}
+
+	// Create a virtual disk if requested
+	if *disk != "" {
+		diskPath := strings.TrimSuffix(isoPath, filepath.Ext(isoPath)) + "-disk.qcow2"
+
+		// Create disk image if it doesn't exist
+		if _, err := os.Stat(diskPath); os.IsNotExist(err) {
+			ui.SubStep("Creating virtual disk: " + *disk)
+			createCmd := exec.Command("qemu-img", "create", "-f", "qcow2", diskPath, *disk)
+			createCmd.Stderr = os.Stderr
+			if err := createCmd.Run(); err != nil {
+				ui.Error("Failed to create disk image", err)
+			}
+		} else {
+			ui.SubStep("Using existing disk: " + diskPath)
+		}
+
+		ui.Info("Disk", diskPath+" ("+*disk+")")
+		qemuArgs = append(qemuArgs, "-hda", diskPath)
+	}
+
+	ui.Success("Starting virtual machine...")
+
+	cmd := exec.Command(qemuBin, qemuArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// Check if KVM is unavailable and retry without it
+		if strings.Contains(err.Error(), "exit status") {
+			ui.Warn("KVM may not be available, retrying without hardware acceleration...")
+			// Remove -enable-kvm
+			var fallbackArgs []string
+			for _, arg := range qemuArgs {
+				if arg != "-enable-kvm" {
+					fallbackArgs = append(fallbackArgs, arg)
+				}
+			}
+			cmd2 := exec.Command(qemuBin, fallbackArgs...)
+			cmd2.Stdin = os.Stdin
+			cmd2.Stdout = os.Stdout
+			cmd2.Stderr = os.Stderr
+			if err2 := cmd2.Run(); err2 != nil {
+				ui.Error("QEMU failed", err2)
+			}
+		}
+	}
 }

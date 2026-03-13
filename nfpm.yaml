@@ -1,0 +1,41 @@
+# DistroRun nfpm packaging config
+# Build RPM: make rpm
+# Build DEB: make deb
+
+name: distrorun
+arch: amd64
+platform: linux
+version: v0.1.0
+maintainer: "DistroRun <distrorun@example.com>"
+description: "Custom Linux OS Builder — Build bootable ISOs from YAML configurations"
+vendor: "DistroRun"
+homepage: "https://github.com/talfaza/distrorun"
+license: "MIT"
+
+contents:
+  - src: ./distrorun
+    dst: /usr/bin/distrorun
+    file_info:
+      mode: 0755
+
+  - src: ./sample.distrorun.yaml
+    dst: /usr/share/doc/distrorun/sample.distrorun.yaml
+    type: doc
+
+  - src: ./distrorun.1
+    dst: /usr/share/man/man1/distrorun.1
+    type: doc
+
+rpm:
+  summary: "Custom Linux OS Builder"
+  group: "Development/Tools"
+
+deb: {}
+
+depends:
+  - xorriso
+  - squashfs-tools
+
+recommends:
+  - qemu-system-x86
+  - syslinux

@@ -1,0 +1,163 @@
+.TH DISTRORUN 1 "February 2026" "v0.1.0" "DistroRun Manual"
+.SH NAME
+distrorun \- Custom Linux OS Builder
+.SH SYNOPSIS
+.B distrorun build
+.RI < config.yaml >
+.RB [ \-o
+.IR output.iso ]
+.br
+.B distrorun test
+.RI < iso-file >
+.RB [ \-r
+.IR RAM_MB ]
+.RB [ \-d
+.IR DISK_SIZE ]
+.br
+.B distrorun version
+.br
+.B distrorun help
+.SH DESCRIPTION
+.B DistroRun
+builds custom bootable Linux ISOs from declarative YAML configuration files.
+Define your OS (base distro, packages, users, services) in a single YAML file,
+and the engine produces a bootable ISO image along with an SPDX Software Bill of Materials (SBOM).
+.PP
+Currently supports
+.B Alpine Linux
+as the base distribution.
+.SH COMMANDS
+.TP
+.B build
+The core command. Reads your YAML configuration, bootstraps a root filesystem
+via chroot, installs packages, creates users (with SHA-512 hashed passwords),
+enables services, and produces a bootable ISO using squashfs + ISOLINUX.
+.IP
+Requires
+.B root privileges
+(uses chroot, mount).
+.TP
+.B test
+Launches a QEMU virtual machine to test a generated ISO. Supports configurable
+RAM and optional virtual disk attachment. Uses KVM hardware acceleration when
+available, with automatic fallback.
+.TP
+.B version
+Print the version number.
+.TP
+.B help
+Print usage information.
+.SH BUILD FLAGS
+.TP
+.BR \-o " " \fIpath\fR
+Output ISO file path. Defaults to
+.IR <name>.iso .
+.SH TEST FLAGS
+.TP
+.BR \-r " " \fIMB\fR
+Amount of RAM in megabytes. Default: 512.
+.TP
+.BR \-d " " \fISIZE\fR
+Create and attach a virtual qcow2 disk of the given size (e.g.
+.BR 8G ", " 20G ).
+The disk image persists between test runs. Default: no disk.
+.SH YAML CONFIGURATION
+A minimal DistroRun YAML file looks like:
+.PP
+.nf
+.RS
+version: "1.0"
+name: my-server
+
+distro:
+  base: alpine
+
+packages:
+  - nginx
+  - vim
+
+users:
+  - name: root
+    password: toor
+  - name: admin
+    password: secret123
+
+services:
+  enable:
+    - nginx
+    - sshd
+
+build:
+  sbom: true
+.RE
+.fi
+.SH BUILD PIPELINE
+The build command executes these steps:
+.PP
+1. Parse and validate YAML configuration
+.br
+2. Check host dependencies (xorriso, mksquashfs)
+.br
+3. Bootstrap Alpine rootfs (download minirootfs, chroot, install base)
+.br
+4. Install user-specified packages
+.br
+5. Create users and hash passwords
+.br
+6. Enable OpenRC services
+.br
+7. Generate SPDX SBOM (if enabled)
+.br
+8. Set up ISOLINUX bootloader
+.br
+9. Build squashfs + ISO image
+.SH HOST DEPENDENCIES
+.TP
+.B Required
+xorriso, squashfs-tools (mksquashfs), syslinux
+.TP
+.B Optional
+qemu-system-x86 (for the test command)
+.SH FILES
+.TP
+.I /usr/bin/distrorun
+The DistroRun binary.
+.TP
+.I /usr/share/doc/distrorun/sample.distrorun.yaml
+Example configuration file.
+.SH EXAMPLES
+Build an ISO:
+.PP
+.nf
+.RS
+sudo distrorun build my-config.yaml -o my-linux.iso
+.RE
+.fi
+.PP
+Test in QEMU with 1 GB RAM:
+.PP
+.nf
+.RS
+distrorun test my-linux.iso -r 1024
+.RE
+.fi
+.PP
+Test with a 10 GB virtual disk:
+.PP
+.nf
+.RS
+distrorun test my-linux.iso -r 2048 -d 10G
+.RE
+.fi
+.SH SECURITY
+Passwords in the YAML are hashed with SHA-512 via
+.B chpasswd
+during the build. Plain-text passwords are
+.B never
+stored in the final ISO image.
+.SH BUGS
+Report bugs at https://github.com/talfaza/distrorun/issues
+.SH AUTHOR
+DistroRun contributors
+.SH LICENSE
+MIT License

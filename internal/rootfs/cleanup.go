@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/talfaza/distrorun/internal/ui"
 )
 
 // Unmount unmounts all chroot bind mounts (proc, dev, sys).
@@ -42,11 +44,12 @@ func (r *Rootfs) Unmount() {
 
 // Cleanup unmounts all chroot bind mounts and optionally removes the working directory.
 func (r *Rootfs) Cleanup(removeWorkDir bool) {
-	fmt.Println("  Unmounting chroot mounts...")
+	ui.SubStep("Unmounting chroot mounts...")
 	r.Unmount()
 
 	if removeWorkDir {
-		fmt.Printf("  Removing working directory: %s\n", r.WorkDir)
+		ui.SubStep("Removing working directory...")
+		ui.Detail(r.WorkDir)
 		os.RemoveAll(r.WorkDir)
 	}
 }
@@ -54,7 +57,7 @@ func (r *Rootfs) Cleanup(removeWorkDir bool) {
 // CleanupRootfs removes unnecessary files from the rootfs before packaging.
 // MUST be called AFTER Unmount() — otherwise it would delete host /dev entries.
 func (r *Rootfs) CleanupRootfs() error {
-	fmt.Println("  Cleaning up rootfs...")
+	ui.SubStep("Cleaning rootfs for packaging...")
 
 	// Clear apk cache
 	cachePath := filepath.Join(r.Path, "var", "cache", "apk")

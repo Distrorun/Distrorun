@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/talfaza/distrorun/internal/ui"
 )
 
 // customInit is the init script for live CD booting.
@@ -26,7 +28,7 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 
 # Load kernel modules for CD-ROM and squashfs
-for mod in loop squashfs isofs sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi; do
+for mod in loop squashfs isofs sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi virtio_net e1000 8139cp 8139too; do
     modprobe $mod 2>/dev/null
 done
 
@@ -82,7 +84,7 @@ exec switch_root /sysroot /sbin/init
 // PatchInitramfs replaces the /init script inside the generated initramfs
 // with our custom live CD init. The initramfs is a gzip-compressed cpio archive.
 func (r *Rootfs) PatchInitramfs() error {
-	fmt.Println("  Patching initramfs with live CD init...")
+	ui.SubStep("Patching initramfs with live CD init...")
 
 	bootDir := filepath.Join(r.Path, "boot")
 
@@ -198,6 +200,6 @@ extractCpio:
 	gzWriter.Close()
 	outFile.Close()
 
-	fmt.Println("  Initramfs patched successfully")
+	ui.SubStep("Initramfs patched successfully")
 	return nil
 }

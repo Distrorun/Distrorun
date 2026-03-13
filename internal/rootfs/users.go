@@ -5,6 +5,7 @@ import (
 	"os/exec"
 
 	"github.com/talfaza/distrorun/internal/config"
+	"github.com/talfaza/distrorun/internal/ui"
 )
 
 // SetupUsers creates system users and sets their passwords.
@@ -12,14 +13,22 @@ import (
 // stored in the final image.
 func (r *Rootfs) SetupUsers(users []config.User) error {
 	for _, u := range users {
-		fmt.Printf("  Setting up user: %s\n", u.Name)
+		if u.Name == "root" {
+			ui.UserItem(u.Name, "password update")
+		} else {
+			ui.UserItem(u.Name, "new user")
+		}
 
 		if u.Name != "root" {
-			// Create user (non-interactively, no password yet)
-			cmd := exec.Command("chroot", r.Path, "adduser", "-D", u.Name)
+			// Create user with bash as default shell
+			cmd := exec.Command("chroot", r.Path, "adduser", "-D", "-s", "/bin/bash", u.Name)
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("creating user %s: %w", u.Name, err)
 			}
+		} else {
+			// Set root's shell to bash
+			cmd := exec.Command("chroot", r.Path, "sed", "-i", `s|^root:(.*):/bin/sh$|root:\1:/bin/bash|`, "/etc/passwd")
+			_ = cmd.Run() // best-effort
 		}
 
 		// Set password via chpasswd (hashes with SHA-512)
