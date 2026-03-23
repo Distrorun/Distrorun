@@ -63,7 +63,6 @@ func Setup(rootfsPath, stagingDir string) error {
 			return fmt.Errorf("copying %s: %w", name, err)
 		}
 	}
-
 	// Copy optional syslinux files (non-fatal if missing)
 	for _, name := range optionalFiles {
 		src := findFile(name)

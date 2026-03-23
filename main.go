@@ -1,4 +1,4 @@
-// DistroRun Engine — Builds custom Alpine Linux ISOs from YAML configurations.
+// DistroRun Engine — Builds custom Linux ISOs from YAML configurations.
 //
 // Usage:
 //

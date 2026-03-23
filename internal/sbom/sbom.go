@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,9 +36,11 @@ type SPDXPackage struct {
 	SPDXID           string            `json:"SPDXID"`
 	Name             string            `json:"name"`
 	VersionInfo      string            `json:"versionInfo"`
+	Supplier         string            `json:"supplier,omitempty"`
 	DownloadLocation string            `json:"downloadLocation"`
 	FilesAnalyzed    bool              `json:"filesAnalyzed"`
 	ExternalRefs     []SPDXExternalRef `json:"externalRefs,omitempty"`
+	PrimaryPurpose   string            `json:"primaryPackagePurpose,omitempty"`
 }
 
 // SPDXExternalRef is a package URL reference.
@@ -55,10 +58,43 @@ type SPDXRelationship struct {
 }
 
 // Generate creates an SPDX 2.3 JSON SBOM from the packages installed in the rootfs.
+// Uses Trivy if available (guaranteed compatibility), falls back to apk-based generation.
 func Generate(rootfsPath, configName, outputPath string) error {
-	ui.SubStep("Scanning installed packages...")
+	// Try Trivy first — produces a perfectly compatible SBOM
+	if trivyPath, err := exec.LookPath("trivy"); err == nil {
+		return generateWithTrivy(trivyPath, rootfsPath, outputPath)
+	}
 
-	// Get list of installed packages with versions
+	// Fallback: generate from apk info
+	return generateFromApk(rootfsPath, configName, outputPath)
+}
+
+// generateWithTrivy uses `trivy rootfs` to scan the rootfs and produce an SPDX JSON SBOM.
+func generateWithTrivy(trivyPath, rootfsPath, outputPath string) error {
+	ui.SubStep("Generating SBOM with Trivy...")
+
+	cmd := exec.Command(trivyPath, "rootfs",
+		"--format", "spdx-json",
+		"--output", outputPath,
+		rootfsPath,
+	)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("trivy rootfs: %w", err)
+	}
+
+	ui.SubStep("SBOM generated (Trivy SPDX 2.3)")
+	ui.InfoPath("SBOM", outputPath)
+	return nil
+}
+
+// generateFromApk builds an SPDX 2.3 JSON SBOM by reading apk package info.
+func generateFromApk(rootfsPath, configName, outputPath string) error {
+	ui.SubStep("Scanning installed packages (apk)...")
+
+	alpineVersionFull := detectAlpineVersionFull(rootfsPath)
+	alpineVersion := detectAlpineVersion(rootfsPath)
+
 	cmd := exec.Command("chroot", rootfsPath, "apk", "info", "-v")
 	output, err := cmd.Output()
 	if err != nil {
@@ -81,28 +117,34 @@ func Generate(rootfsPath, configName, outputPath string) error {
 			{
 				Element:        "SPDXRef-DOCUMENT",
 				RelationType:   "DESCRIBES",
-				RelatedElement: "SPDXRef-rootfs",
+				RelatedElement: "SPDXRef-operating-system",
 			},
 		},
 	}
 
-	// Add a root package representing the entire rootfs
 	doc.Packages = append(doc.Packages, SPDXPackage{
-		SPDXID:           "SPDXRef-rootfs",
-		Name:             configName,
-		VersionInfo:      "1.0",
-		DownloadLocation: "NOASSERTION",
+		SPDXID:           "SPDXRef-operating-system",
+		Name:             "alpine",
+		VersionInfo:      alpineVersionFull,
+		Supplier:         "Organization: Alpine Linux",
+		DownloadLocation: "https://alpinelinux.org/",
 		FilesAnalyzed:    false,
+		PrimaryPurpose:   "OPERATING-SYSTEM",
+		ExternalRefs: []SPDXExternalRef{
+			{
+				ReferenceCategory: "PACKAGE-MANAGER",
+				ReferenceType:     "purl",
+				ReferenceLocator:  fmt.Sprintf("pkg:apk/alpine/alpine-base@%s?arch=x86_64&distro=%s", alpineVersionFull, alpineVersionFull),
+			},
+		},
 	})
 
-	// Parse each "package-name-version" line from apk info -v
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
-		// apk info -v outputs "name-version", split at last hyphen
 		name, version := parseApkPackage(line)
 		spdxID := fmt.Sprintf("SPDXRef-Package-%d", i)
 
@@ -110,27 +152,27 @@ func Generate(rootfsPath, configName, outputPath string) error {
 			SPDXID:           spdxID,
 			Name:             name,
 			VersionInfo:      version,
-			DownloadLocation: fmt.Sprintf("https://pkgs.alpinelinux.org/package/edge/main/x86_64/%s", name),
+			Supplier:         "Organization: Alpine Linux",
+			DownloadLocation: fmt.Sprintf("https://pkgs.alpinelinux.org/package/v%s/main/x86_64/%s", alpineVersion, name),
 			FilesAnalyzed:    false,
+			PrimaryPurpose:   "LIBRARY",
 			ExternalRefs: []SPDXExternalRef{
 				{
 					ReferenceCategory: "PACKAGE-MANAGER",
 					ReferenceType:     "purl",
-					ReferenceLocator:  fmt.Sprintf("pkg:apk/alpine/%s@%s", name, version),
+					ReferenceLocator:  fmt.Sprintf("pkg:apk/alpine/%s@%s?arch=x86_64&distro=%s", name, version, alpineVersionFull),
 				},
 			},
 		}
 		doc.Packages = append(doc.Packages, pkg)
 
-		// Relationship: rootfs CONTAINS this package
 		doc.Relationships = append(doc.Relationships, SPDXRelationship{
-			Element:        "SPDXRef-rootfs",
+			Element:        "SPDXRef-operating-system",
 			RelationType:   "CONTAINS",
 			RelatedElement: spdxID,
 		})
 	}
 
-	// Write to file
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling SBOM: %w", err)
@@ -140,7 +182,7 @@ func Generate(rootfsPath, configName, outputPath string) error {
 		return fmt.Errorf("writing SBOM: %w", err)
 	}
 
-	ui.SubStep(fmt.Sprintf("SBOM written with %d packages", len(lines)))
+	ui.SubStep(fmt.Sprintf("SBOM written with %d packages (Alpine %s)", len(lines), alpineVersion))
 	ui.InfoPath("SBOM", outputPath)
 	return nil
 }
@@ -154,4 +196,28 @@ func parseApkPackage(s string) (name, version string) {
 		}
 	}
 	return s, "unknown"
+}
+
+// detectAlpineVersionFull reads /etc/alpine-release and returns the full version (e.g. "3.23.3").
+func detectAlpineVersionFull(rootfsPath string) string {
+	data, err := os.ReadFile(filepath.Join(rootfsPath, "etc", "alpine-release"))
+	if err != nil {
+		return "3.21.0"
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// detectAlpineVersion reads /etc/alpine-release from the rootfs.
+// Returns the major.minor version (e.g. "3.21").
+func detectAlpineVersion(rootfsPath string) string {
+	data, err := os.ReadFile(filepath.Join(rootfsPath, "etc", "alpine-release"))
+	if err != nil {
+		return "3.21" // fallback
+	}
+	full := strings.TrimSpace(string(data)) // e.g. "3.21.3"
+	parts := strings.SplitN(full, ".", 3)
+	if len(parts) >= 2 {
+		return parts[0] + "." + parts[1] // "3.21"
+	}
+	return full
 }
