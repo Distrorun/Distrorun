@@ -3,6 +3,7 @@ package rootfs
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -48,7 +49,8 @@ func (w *apkWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// InstallPackages installs user-specified packages via apk inside the chroot.
+// InstallPackages installs user-specified packages inside the chroot.
+// Uses apk for Alpine and dnf for Fedora.
 func (r *Rootfs) InstallPackages(pkgs []string) error {
 	if len(pkgs) == 0 {
 		ui.Detail("No additional packages to install")
@@ -56,6 +58,28 @@ func (r *Rootfs) InstallPackages(pkgs []string) error {
 	}
 
 	ui.SubStep(fmt.Sprintf("Installing %d packages...", len(pkgs)))
+
+	if r.distro == "fedora" {
+		// Run dnf from the host with --installroot — dnf is not installed inside the chroot.
+		args := []string{
+			"install",
+			"--installroot", r.Path,
+			"--releasever", "40",
+			"--use-host-config",
+			"--setopt=install_weak_deps=False",
+			"--setopt=tsflags=nodocs",
+			"--nogpgcheck",
+			"-y",
+		}
+		args = append(args, pkgs...)
+		cmd := exec.Command("dnf", args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("dnf install %s: %w", strings.Join(pkgs, " "), err)
+		}
+		return nil
+	}
 
 	args := append([]string{r.Path, "apk", "add", "--no-cache"}, pkgs...)
 	cmd := exec.Command("chroot", args...)

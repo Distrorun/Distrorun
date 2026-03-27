@@ -2,13 +2,13 @@ version: "1.0"
 name: testOS
 
 distro:
-  base: alpine
+  base: fedora
+  type: server
 
 packages:
   - nginx
   - vim
   - curl
-  - openssh
 
 users:
   - name: root
@@ -20,7 +20,7 @@ services:
   enable:
     - nginx
     - sshd
-    - networking
 
 build:
-  sbom: true
+  output: iso
+  sbom: false

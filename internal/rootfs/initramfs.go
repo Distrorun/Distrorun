@@ -27,8 +27,8 @@ mount -t devtmpfs devtmpfs /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 
-# Load kernel modules for CD-ROM and squashfs
-for mod in loop squashfs isofs sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi virtio_net e1000 8139cp 8139too; do
+# Load kernel modules for CD-ROM, squashfs, and overlay
+for mod in loop squashfs isofs overlay sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi virtio_net e1000 8139cp 8139too; do
     modprobe $mod 2>/dev/null
 done
 
@@ -71,8 +71,10 @@ mount -t overlay overlay \
     -o lowerdir=/lower,upperdir=/upper/upper,workdir=/upper/work \
     /sysroot
 
+# Create dirs systemd expects before switch_root
+mkdir -p /sysroot/dev /sysroot/proc /sysroot/sys /sysroot/run
+
 # Move virtual filesystems into the new root
-mkdir -p /sysroot/dev /sysroot/proc /sysroot/sys
 mount --move /dev /sysroot/dev
 mount --move /proc /sysroot/proc
 mount --move /sys /sysroot/sys

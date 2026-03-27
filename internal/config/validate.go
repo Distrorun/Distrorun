@@ -20,8 +20,13 @@ func (c *Config) Validate() error {
 	// Distro validation
 	if c.Distro.Base == "" {
 		errs = append(errs, "\"distro.base\" is required")
-	} else if c.Distro.Base != "alpine" {
-		errs = append(errs, fmt.Sprintf("unsupported distro base %q: only \"alpine\" is supported in this version", c.Distro.Base))
+	} else if c.Distro.Base != "alpine" && c.Distro.Base != "fedora" {
+		errs = append(errs, fmt.Sprintf("unsupported distro base %q: supported values are \"alpine\", \"fedora\"", c.Distro.Base))
+	}
+	if c.Distro.Base == "fedora" {
+		if c.Distro.Type != "" && c.Distro.Type != "server" && c.Distro.Type != "workstation" {
+			errs = append(errs, fmt.Sprintf("distro.type %q is invalid: must be \"server\" or \"workstation\"", c.Distro.Type))
+		}
 	}
 
 	// Users validation
@@ -35,6 +40,11 @@ func (c *Config) Validate() error {
 		if u.Password == "" {
 			errs = append(errs, fmt.Sprintf("users[%d]: \"password\" is required", i))
 		}
+	}
+
+	if c.Build != nil && c.Build.Output != "" &&
+		c.Build.Output != "iso" && c.Build.Output != "disk" {
+		errs = append(errs, fmt.Sprintf("build.output %q is invalid: must be \"iso\" or \"disk\"", c.Build.Output))
 	}
 
 	if len(errs) > 0 {

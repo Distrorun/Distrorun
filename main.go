@@ -16,6 +16,7 @@ import (
 
 	"github.com/talfaza/distrorun/internal/bootloader"
 	"github.com/talfaza/distrorun/internal/config"
+	"github.com/talfaza/distrorun/internal/disk"
 	"github.com/talfaza/distrorun/internal/iso"
 	"github.com/talfaza/distrorun/internal/rootfs"
 	"github.com/talfaza/distrorun/internal/sbom"
@@ -82,22 +83,49 @@ func runBuild(args []string) {
 		totalSteps = 9
 	}
 
-	// Determine output path — override with -o, default to <name>.iso
+	// Determine output path — override with -o, default based on output mode
 	outputPath := *output
 	if outputPath == "" {
-		outputPath = cfg.Name + ".iso"
+		if cfg.OutputMode() == "disk" {
+			outputPath = cfg.Name + ".qcow2"
+		} else {
+			outputPath = cfg.Name + ".iso"
+		}
 	}
 
 	// ── Step 2: Check host dependencies ──────────────────────────────────
 	ui.StepHeader(2, totalSteps, "Checking host dependencies...")
-	if err := iso.CheckHostDeps(); err != nil {
-		ui.Error("Missing dependency", err)
+	if cfg.Distro.Base == "fedora" {
+		if cfg.OutputMode() == "disk" {
+			if err := disk.CheckDiskDeps(); err != nil {
+				ui.Error("Missing dependency", err)
+			}
+		} else {
+			if err := iso.CheckFedoraDeps(); err != nil {
+				ui.Error("Missing dependency", err)
+			}
+		}
+	} else {
+		if err := iso.CheckHostDeps(); err != nil {
+			ui.Error("Missing dependency", err)
+		}
 	}
 	ui.Success("All dependencies found")
 
 	// ── Step 3: Bootstrap rootfs ─────────────────────────────────────────
-	ui.StepHeader(3, totalSteps, "Bootstrapping Alpine rootfs...")
-	rfs, err := rootfs.Bootstrap(cfg.Name)
+	var rfs *rootfs.Rootfs
+	if cfg.Distro.Base == "fedora" {
+		if cfg.OutputMode() == "disk" {
+			ui.StepHeader(3, totalSteps, "Bootstrapping Fedora rootfs (disk mode)...")
+			rfs, err = rootfs.BootstrapFedoraDisk(cfg.Name, cfg.Distro.Type)
+		} else {
+			ui.StepHeader(3, totalSteps, "Bootstrapping Fedora rootfs...")
+			rfs, err = rootfs.BootstrapFedora(cfg.Name, cfg.Distro.Type)
+		}
+	} else {
+		ui.StepHeader(3, totalSteps, "Bootstrapping Alpine rootfs...")
+		rfs, err = rootfs.Bootstrap(cfg.Name)
+	}
 	if err != nil {
 		ui.Error("Bootstrap failed", err)
 	}
@@ -147,31 +175,61 @@ func runBuild(args []string) {
 		currentStep++
 	}
 
-	// ── Step N-1: Setup bootloader ───────────────────────────────────────
-	ui.StepHeader(currentStep, totalSteps, "Setting up bootloader...")
-
-	stagingDir := filepath.Join(rfs.WorkDir, "staging")
-	if err := os.MkdirAll(stagingDir, 0755); err != nil {
-		ui.Error("Creating staging directory", err)
-	}
-
-	// Unmount chroot bind mounts before cleaning — CleanupRootfs removes /dev/*
-	// which would destroy the HOST's /dev/null if /dev is still bind-mounted!
+	// ── Step N-1: Setup bootloader / prepare artifact ────────────────────
+	// Always unmount and clean rootfs before packaging.
 	rfs.Unmount()
-
-	// Clean rootfs before packaging
 	rfs.CleanupRootfs()
 
-	if err := bootloader.Setup(rfs.Path, stagingDir); err != nil {
-		ui.Error("Bootloader setup failed", err)
+	var stagingDir string
+
+	if cfg.OutputMode() == "disk" {
+		ui.StepHeader(currentStep, totalSteps, "Building disk image...")
+		if err := disk.Build(rfs.Path, outputPath, cfg.DiskSize()); err != nil {
+			ui.Error("Disk build failed", err)
+		}
+		ui.Success("Disk image built")
+	} else {
+		ui.StepHeader(currentStep, totalSteps, "Setting up bootloader...")
+
+		stagingDir = filepath.Join(rfs.WorkDir, "staging")
+		if err := os.MkdirAll(stagingDir, 0755); err != nil {
+			ui.Error("Creating staging directory", err)
+		}
+
+		if cfg.Distro.Base == "fedora" {
+			kver, vmlinuz, initramfsFile, kErr := rfs.FedoraKernelFiles()
+			if kErr != nil {
+				ui.Error("Finding Fedora kernel files", kErr)
+			}
+			kf := bootloader.KernelFiles{
+				Version:   kver,
+				Vmlinuz:   vmlinuz,
+				Initramfs: initramfsFile,
+			}
+			if err := bootloader.SetupGrub(rfs.Path, stagingDir, kf); err != nil {
+				ui.Error("Bootloader setup failed", err)
+			}
+		} else {
+			if err := bootloader.Setup(rfs.Path, stagingDir); err != nil {
+				ui.Error("Bootloader setup failed", err)
+			}
+		}
+		ui.Success("Bootloader configured")
 	}
-	ui.Success("Bootloader configured")
 	currentStep++
 
-	// ── Step N: Build ISO ────────────────────────────────────────────────
-	ui.StepHeader(currentStep, totalSteps, "Building ISO...")
-	if err := iso.Build(rfs.Path, stagingDir, outputPath); err != nil {
-		ui.Error("ISO build failed", err)
+	// ── Step N: Build ISO (skipped in disk mode — already built above) ───
+	if cfg.OutputMode() != "disk" {
+		ui.StepHeader(currentStep, totalSteps, "Building ISO...")
+		if cfg.Distro.Base == "fedora" {
+			if err := iso.BuildFedora(rfs.Path, stagingDir, outputPath); err != nil {
+				ui.Error("ISO build failed", err)
+			}
+		} else {
+			if err := iso.Build(rfs.Path, stagingDir, outputPath); err != nil {
+				ui.Error("ISO build failed", err)
+			}
+		}
 	}
 
 	// ── Done ─────────────────────────────────────────────────────────────
@@ -179,7 +237,12 @@ func runBuild(args []string) {
 	if cfg.SBOMEnabled() {
 		sbomPath = strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + "-sbom.spdx.json"
 	}
-	qemuCmd := "qemu-system-x86_64 -cdrom " + outputPath + " -m 512"
+	var qemuCmd string
+	if cfg.OutputMode() == "disk" {
+		qemuCmd = "qemu-system-x86_64 -hda " + outputPath + " -m 1024 -enable-kvm"
+	} else {
+		qemuCmd = "qemu-system-x86_64 -cdrom " + outputPath + " -m 512"
+	}
 	elapsed := time.Since(buildStart)
 	ui.PrintSummary(outputPath, sbomPath, qemuCmd, elapsed)
 }

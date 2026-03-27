@@ -44,6 +44,7 @@ type Rootfs struct {
 	Path    string // absolute path to the rootfs directory
 	WorkDir string // parent working directory
 	arch    string
+	distro  string // "alpine" or "fedora"
 }
 
 // Bootstrap creates a new Alpine rootfs by downloading the minirootfs tarball,
@@ -57,6 +58,15 @@ func Bootstrap(name string) (*Rootfs, error) {
 	workDir := filepath.Join(os.TempDir(), fmt.Sprintf("distrorun-%s", name))
 	rootfsPath := filepath.Join(workDir, "rootfs")
 
+	// Clean up any stale workdir from a previous (possibly failed) build.
+	if _, err := os.Stat(workDir); err == nil {
+		stale := &Rootfs{Path: rootfsPath, WorkDir: workDir}
+		stale.Unmount()
+		if err := os.RemoveAll(workDir); err != nil {
+			return nil, fmt.Errorf("removing stale workdir: %w", err)
+		}
+	}
+
 	if err := os.MkdirAll(rootfsPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating rootfs directory: %w", err)
 	}
@@ -65,6 +75,7 @@ func Bootstrap(name string) (*Rootfs, error) {
 		Path:    rootfsPath,
 		WorkDir: workDir,
 		arch:    arch,
+		distro:  "alpine",
 	}
 
 	// Step 1: Download minirootfs tarball

@@ -20,15 +20,21 @@ func (r *Rootfs) SetupUsers(users []config.User) error {
 		}
 
 		if u.Name != "root" {
-			// Create user with bash as default shell
-			cmd := exec.Command("chroot", r.Path, "adduser", "-D", "-s", "/bin/bash", u.Name)
+			var cmd *exec.Cmd
+			if r.distro == "fedora" {
+				// useradd is the standard tool on Fedora/systemd distros
+				cmd = exec.Command("chroot", r.Path, "useradd", "-m", "-s", "/bin/bash", u.Name)
+			} else {
+				// adduser is Alpine's BusyBox variant
+				cmd = exec.Command("chroot", r.Path, "adduser", "-D", "-s", "/bin/bash", u.Name)
+			}
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("creating user %s: %w", u.Name, err)
 			}
 		} else {
-			// Set root's shell to bash
+			// Set root's shell to bash (best-effort on both distros)
 			cmd := exec.Command("chroot", r.Path, "sed", "-i", `s|^root:(.*):/bin/sh$|root:\1:/bin/bash|`, "/etc/passwd")
-			_ = cmd.Run() // best-effort
+			_ = cmd.Run()
 		}
 
 		// Set password via chpasswd (hashes with SHA-512)

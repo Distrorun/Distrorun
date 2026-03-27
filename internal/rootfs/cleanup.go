@@ -59,9 +59,13 @@ func (r *Rootfs) Cleanup(removeWorkDir bool) {
 func (r *Rootfs) CleanupRootfs() error {
 	ui.SubStep("Cleaning rootfs for packaging...")
 
-	// Clear apk cache
-	cachePath := filepath.Join(r.Path, "var", "cache", "apk")
-	os.RemoveAll(cachePath)
+	// Clear package manager cache
+	if r.distro == "fedora" {
+		os.RemoveAll(filepath.Join(r.Path, "var", "cache", "dnf"))
+		os.RemoveAll(filepath.Join(r.Path, "var", "lib", "dnf", "history.sqlite"))
+	} else {
+		os.RemoveAll(filepath.Join(r.Path, "var", "cache", "apk"))
+	}
 
 	// Clear /dev contents (will be populated at boot by devtmpfs)
 	// Only safe because Unmount() was called first

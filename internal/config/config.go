@@ -38,12 +38,30 @@ type Services struct {
 
 // Build controls engine behaviour during artifact generation.
 type Build struct {
-	SBOM bool `yaml:"sbom"`
+	SBOM     bool   `yaml:"sbom"`
+	Output   string `yaml:"output"`    // "iso" (default) or "disk" (qcow2)
+	DiskSize string `yaml:"disk_size"` // e.g. "8G"; defaults to "4G"
 }
 
 // SBOMEnabled returns true if the user requested SBOM generation.
 func (c *Config) SBOMEnabled() bool {
 	return c.Build != nil && c.Build.SBOM
+}
+
+// OutputMode returns the resolved output mode, defaulting to "iso".
+func (c *Config) OutputMode() string {
+	if c.Build != nil && c.Build.Output == "disk" {
+		return "disk"
+	}
+	return "iso"
+}
+
+// DiskSize returns the configured disk size, defaulting to "4G".
+func (c *Config) DiskSize() string {
+	if c.Build != nil && c.Build.DiskSize != "" {
+		return c.Build.DiskSize
+	}
+	return "4G"
 }
 
 // LoadConfig reads a YAML file at path and returns a parsed Config.
