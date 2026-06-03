@@ -15,71 +15,82 @@ import (
 // It mounts the CD-ROM, finds rootfs.squashfs, and creates a writable
 // overlay using tmpfs so the system behaves like a normal writable OS.
 const customInit = `#!/bin/sh
-# DistroRun Live CD Init
+# DistroRun Live Init — works for ISO (CD-ROM) and IMG (USB/disk) outputs
 
-# Install busybox symlinks (mount, sleep, modprobe, etc.)
 /bin/busybox --install -s
-
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-# Mount essential virtual filesystems
 mount -t devtmpfs devtmpfs /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 
-# Load kernel modules for CD-ROM, squashfs, and overlay
-for mod in loop squashfs isofs overlay sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi virtio_net e1000 8139cp 8139too; do
+for mod in loop squashfs isofs overlay sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi virtio_net e1000 8139cp 8139too vfat ext4; do
     modprobe $mod 2>/dev/null
 done
 
-# Wait for CD-ROM device to appear (up to 10 seconds)
-echo "DistroRun: Waiting for CD-ROM..."
+# ── Find boot device (contains rootfs.squashfs) ──────────────────────────────
+echo "DistroRun: Scanning for boot device..."
+BOOT_MNT=/media/boot
+mkdir -p $BOOT_MNT
+SQUASHFS=""
 i=0
-while [ ! -b /dev/sr0 ] && [ $i -lt 10 ]; do
+while [ $i -lt 15 ]; do
+    for dev in /dev/sr0 /dev/sda1 /dev/sdb1 /dev/vda1 /dev/nvme0n1p1 /dev/sda /dev/vda; do
+        [ -b "$dev" ] || continue
+        mount -o ro "$dev" $BOOT_MNT 2>/dev/null || continue
+        if [ -f $BOOT_MNT/rootfs.squashfs ]; then
+            SQUASHFS=$BOOT_MNT/rootfs.squashfs
+            break 2
+        fi
+        umount $BOOT_MNT 2>/dev/null
+    done
     sleep 1
-    i=$((i + 1))
+    i=$((i+1))
 done
 
-if [ ! -b /dev/sr0 ]; then
-    echo "ERROR: CD-ROM device /dev/sr0 not found"
-    echo "Dropping to emergency shell..."
+if [ -z "$SQUASHFS" ]; then
+    echo "ERROR: rootfs.squashfs not found on any device"
     exec /bin/sh
 fi
 
-# Mount the CD-ROM (ISO9660)
-mkdir -p /media/cdrom
-mount -t iso9660 -o ro /dev/sr0 /media/cdrom
-
-if [ ! -f /media/cdrom/rootfs.squashfs ]; then
-    echo "ERROR: rootfs.squashfs not found on CD"
-    echo "Dropping to emergency shell..."
-    exec /bin/sh
-fi
-
-# Mount squashfs as read-only lower layer
+# ── Mount squashfs as read-only lower layer ───────────────────────────────────
 mkdir -p /lower
-mount -t squashfs -o ro,loop /media/cdrom/rootfs.squashfs /lower
+mount -t squashfs -o ro,loop "$SQUASHFS" /lower
 
-# Create tmpfs for writable upper layer
-mkdir -p /upper
-mount -t tmpfs tmpfs /upper
-mkdir -p /upper/upper /upper/work
+# ── Find persistence partition (labeled DISTRORUN_PERS) ──────────────────────
+UPPER=/upper/upper
+WORK=/upper/work
+for dev in /dev/sda2 /dev/sdb2 /dev/vda2 /dev/nvme0n1p2; do
+    [ -b "$dev" ] || continue
+    label=$(blkid -s LABEL -o value "$dev" 2>/dev/null)
+    if [ "$label" = "DISTRORUN_PERS" ]; then
+        echo "DistroRun: Persistence partition found ($dev)"
+        mkdir -p /persistent
+        mount -t ext4 "$dev" /persistent
+        mkdir -p /persistent/upper /persistent/work
+        UPPER=/persistent/upper
+        WORK=/persistent/work
+        break
+    fi
+done
 
-# Create overlay: writable root = tmpfs on top of squashfs
+# ── Create overlay ────────────────────────────────────────────────────────────
+if [ "$UPPER" = "/upper/upper" ]; then
+    echo "DistroRun: No persistence partition, using tmpfs"
+    mkdir -p /upper
+    mount -t tmpfs tmpfs /upper
+    mkdir -p /upper/upper /upper/work
+fi
+
 mkdir -p /sysroot
-mount -t overlay overlay \
-    -o lowerdir=/lower,upperdir=/upper/upper,workdir=/upper/work \
-    /sysroot
+mount -t overlay overlay -o lowerdir=/lower,upperdir=$UPPER,workdir=$WORK /sysroot
 
-# Create dirs systemd expects before switch_root
 mkdir -p /sysroot/dev /sysroot/proc /sysroot/sys /sysroot/run
-
-# Move virtual filesystems into the new root
-mount --move /dev /sysroot/dev
+mount --move /dev  /sysroot/dev
 mount --move /proc /sysroot/proc
-mount --move /sys /sysroot/sys
+mount --move /sys  /sysroot/sys
 
-echo "DistroRun: Switching to root filesystem..."
+echo "DistroRun: Switching to root..."
 exec switch_root /sysroot /sbin/init
 `
 

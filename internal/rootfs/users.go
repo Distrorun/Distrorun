@@ -22,8 +22,9 @@ func (r *Rootfs) SetupUsers(users []config.User) error {
 		if u.Name != "root" {
 			var cmd *exec.Cmd
 			if r.distro == "fedora" {
-				// useradd is the standard tool on Fedora/systemd distros
-				cmd = exec.Command("chroot", r.Path, "useradd", "-m", "-s", "/bin/bash", u.Name)
+				// useradd is the standard tool on Fedora/systemd distros.
+				// -G wheel grants sudo via the default %wheel rule in /etc/sudoers.
+				cmd = exec.Command("chroot", r.Path, "useradd", "-m", "-s", "/bin/bash", "-G", "wheel", u.Name)
 			} else {
 				// adduser is Alpine's BusyBox variant
 				cmd = exec.Command("chroot", r.Path, "adduser", "-D", "-s", "/bin/bash", u.Name)

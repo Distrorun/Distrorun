@@ -1,6 +1,7 @@
 package rootfs
 
 import (
+	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/talfaza/distrorun/internal/ui"
 )
@@ -29,10 +31,14 @@ var fedoraServerPackages = []string{
 	// Networking
 	"NetworkManager",
 	"NetworkManager-tui",
-	"iproute",   // ip, ss
-	"iputils",   // ping
-	"net-tools", // netstat, ifconfig
-	"bind-utils", // dig, nslookup
+	"NetworkManager-wifi",
+	"wpa_supplicant",
+	"linux-firmware", // WiFi/BT chipset firmware (pulled as weak dep, but we disable those)
+	"iw",             // 802.11 diagnostics
+	"iproute",        // ip, ss
+	"iputils",        // ping
+	"net-tools",      // netstat, ifconfig
+	"bind-utils",     // dig, nslookup
 	"openssh-server",
 	"openssh-clients",
 	// Filesystem & storage
@@ -47,29 +53,22 @@ var fedoraServerPackages = []string{
 	"dnf",
 }
 
-// fedoraWorkstationPackages extend the server base with a graphical desktop.
-var fedoraWorkstationPackages = []string{
-	"fedora-release",
-	"systemd",
-	"systemd-udev",
-	"dracut",
-	"kernel",
-	"grub2-pc",
-	"passwd",
-	"shadow-utils",
-	"bash",
-	"busybox",
-	"NetworkManager",
-	"NetworkManager-wifi",
-	"e2fsprogs",
-	"util-linux",
+// fedoraDesktopExtras adds the graphical desktop on top of the server base.
+var fedoraDesktopExtras = []string{
 	"xorg-x11-server-Xorg",
 	"gdm",
 	"gnome-shell",
 	"gnome-terminal",
+	"nautilus",
 	"firefox",
-	"dnf",
+	// Fonts — without these GNOME falls back to ugly bitmap defaults
+	"liberation-fonts",             // sans/serif/mono fallback set
+	"google-noto-sans-fonts",       // broad Unicode coverage
+	"google-noto-emoji-color-fonts", // color emoji
 }
+
+// fedoraWorkstationPackages = server base + desktop extras.
+var fedoraWorkstationPackages = append(append([]string{}, fedoraServerPackages...), fedoraDesktopExtras...)
 
 // BootstrapFedora creates a new Fedora rootfs using dnf --installroot.
 // distroType is "server" (default) or "workstation".
@@ -134,6 +133,8 @@ func BootstrapFedora(name, distroType string) (*Rootfs, error) {
 		return nil, err
 	}
 
+	r.disableFedoraSELinux()
+
 	return r, nil
 }
 
@@ -176,6 +177,7 @@ func BootstrapFedoraDisk(name, distroType string) (*Rootfs, error) {
 		return nil, err
 	}
 	r.configureOSRelease(name)
+	r.disableFedoraSELinux()
 
 	return r, nil
 }
@@ -192,23 +194,64 @@ func (r *Rootfs) installFedoraBaseSystem(distroType string) error {
 	args := []string{
 		"install",
 		"--installroot", r.Path,
-		"--releasever", "40",
+		"--releasever", "43",
 		"--use-host-config",
 		"--setopt=install_weak_deps=False",
 		"--setopt=tsflags=nodocs",
 		"--nogpgcheck",
 		"-y",
 	}
+	if !debugOutput {
+		args = append(args, "-q")
+	}
 	args = append(args, pkgs...)
 
 	cmd := exec.Command("dnf", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+
+	var stderrBuf bytes.Buffer
+	if debugOutput {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	} else {
+		// Capture stderr so we can surface it only on failure.
+		cmd.Stderr = &stderrBuf
+		// Detach from the controlling TTY so dnf5/librepo can't open /dev/tty
+		// to draw its download progress bar over our spinner.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
+
+	var sp *ui.Spinner
+	if !debugOutput {
+		sp = ui.NewSpinner(fmt.Sprintf("dnf installing %s base (%d packages)...", distroType, len(pkgs)))
+		sp.Start()
+	}
+	err := cmd.Run()
+	if sp != nil {
+		sp.Stop()
+	}
+	if err != nil {
+		if stderrBuf.Len() > 0 {
+			return fmt.Errorf("dnf --installroot: %w\n%s", err, stderrBuf.String())
+		}
 		return fmt.Errorf("dnf --installroot: %w", err)
 	}
 
 	return nil
+}
+
+// disableFedoraSELinux writes /etc/selinux/config with SELINUX=disabled so the
+// installed system never attempts an autorelabel on first boot. Without this,
+// systemd may hang at boot waiting on a relabel that can't complete.
+func (r *Rootfs) disableFedoraSELinux() {
+	cfgPath := filepath.Join(r.Path, "etc", "selinux", "config")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		return
+	}
+	cfg := `# DistroRun: SELinux disabled to avoid autorelabel issues on first boot.
+SELINUX=disabled
+SELINUXTYPE=targeted
+`
+	_ = os.WriteFile(cfgPath, []byte(cfg), 0644)
 }
 
 // configureFedoraNetwork writes a NetworkManager connection for DHCP on the first ethernet interface.
@@ -258,18 +301,32 @@ func (r *Rootfs) generateFedoraInitramfs() error {
 
 	initramfsPath := fmt.Sprintf("/boot/initramfs-%s.img", kver)
 
-	cmd := exec.Command("chroot", r.Path,
+	dracutArgs := []string{
+		r.Path,
 		"dracut",
 		"--force",
-		"--compress=gzip",
 		"--no-hostonly",
 		"--add-drivers", "squashfs loop iso9660 overlay sr_mod cdrom ata_piix ahci virtio_blk virtio_pci virtio_scsi",
-		initramfsPath,
-		kver,
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	}
+	if !debugOutput {
+		dracutArgs = append(dracutArgs, "--quiet")
+	}
+	dracutArgs = append(dracutArgs, "--compress=gzip", initramfsPath, kver)
+
+	cmd := exec.Command("chroot", dracutArgs...)
+
+	var stderrBuf bytes.Buffer
+	if debugOutput {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stderr = &stderrBuf
+	}
+
 	if err := cmd.Run(); err != nil {
+		if stderrBuf.Len() > 0 {
+			return fmt.Errorf("dracut: %w\n%s", err, stderrBuf.String())
+		}
 		return fmt.Errorf("dracut: %w", err)
 	}
 

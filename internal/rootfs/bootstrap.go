@@ -15,6 +15,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// debugOutput controls whether package-manager (dnf/apk) stdout is shown.
+// Set via SetDebug from main when the user passes --debug or -d.
+var debugOutput bool
+
+// SetDebug toggles verbose package-manager output.
+func SetDebug(on bool) { debugOutput = on }
+
 // alpine base packages needed for a bootable system
 var alpineBasePackages = []string{
 	"alpine-base",
@@ -282,18 +289,43 @@ func (r *Rootfs) installBaseSystem() error {
 
 	// apk update
 	cmd := exec.Command("chroot", r.Path, "apk", "update")
-	cmd.Stdout = os.Stdout
+	if debugOutput {
+		cmd.Stdout = os.Stdout
+	}
 	cmd.Stderr = os.Stderr
+
+	var sp *ui.Spinner
+	if !debugOutput {
+		sp = ui.NewSpinner("apk updating package index...")
+		sp.Start()
+	}
 	if err := cmd.Run(); err != nil {
+		if sp != nil {
+			sp.Stop()
+		}
 		return fmt.Errorf("apk update: %w", err)
+	}
+	if sp != nil {
+		sp.Stop()
 	}
 
 	// Install base packages
 	args := append([]string{r.Path, "apk", "add", "--no-cache"}, alpineBasePackages...)
 	cmd = exec.Command("chroot", args...)
-	cmd.Stdout = os.Stdout
+	if debugOutput {
+		cmd.Stdout = os.Stdout
+	}
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+
+	if !debugOutput {
+		sp = ui.NewSpinner(fmt.Sprintf("apk installing %d base packages...", len(alpineBasePackages)))
+		sp.Start()
+	}
+	err := cmd.Run()
+	if sp != nil {
+		sp.Stop()
+	}
+	if err != nil {
 		return fmt.Errorf("installing base packages: %w", err)
 	}
 

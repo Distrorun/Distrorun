@@ -23,4 +23,6 @@ services:
     - networking
 
 build:
+  output: disk
+  disk_size: 20G
   sbom: true

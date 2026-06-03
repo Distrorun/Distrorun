@@ -80,15 +80,14 @@ func TestLoadConfig_UnsupportedDistro(t *testing.T) {
 version: "1"
 name: test
 distro:
-  base: fedora
-  type: server
+  base: ubuntu
 users:
   - name: root
     password: toor
 `
 	_, err := LoadConfig(writeTemp(t, yaml))
 	if err == nil {
-		t.Fatal("expected error for fedora, got nil")
+		t.Fatal("expected error for unsupported distro, got nil")
 	}
 	if !strings.Contains(err.Error(), "unsupported distro") {
 		t.Errorf("error should mention unsupported distro, got: %v", err)

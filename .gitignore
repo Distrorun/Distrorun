@@ -1,3 +1,5 @@
 *.iso
 *.json
 *.qcow2
+*.img
+tmp_test

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/talfaza/distrorun/internal/ui"
 )
@@ -64,18 +65,43 @@ func (r *Rootfs) InstallPackages(pkgs []string) error {
 		args := []string{
 			"install",
 			"--installroot", r.Path,
-			"--releasever", "40",
+			"--releasever", "43",
 			"--use-host-config",
 			"--setopt=install_weak_deps=False",
 			"--setopt=tsflags=nodocs",
 			"--nogpgcheck",
 			"-y",
 		}
+		if !debugOutput {
+			args = append(args, "-q")
+		}
 		args = append(args, pkgs...)
 		cmd := exec.Command("dnf", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+
+		var stderrBuf bytes.Buffer
+		if debugOutput {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		} else {
+			cmd.Stderr = &stderrBuf
+			// Detach controlling TTY so dnf5/librepo can't draw its download
+			// progress bar over our spinner via /dev/tty.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		}
+
+		var sp *ui.Spinner
+		if !debugOutput {
+			sp = ui.NewSpinner(fmt.Sprintf("dnf installing %d user packages...", len(pkgs)))
+			sp.Start()
+		}
+		err := cmd.Run()
+		if sp != nil {
+			sp.Stop()
+		}
+		if err != nil {
+			if stderrBuf.Len() > 0 {
+				return fmt.Errorf("dnf install %s: %w\n%s", strings.Join(pkgs, " "), err, stderrBuf.String())
+			}
 			return fmt.Errorf("dnf install %s: %w", strings.Join(pkgs, " "), err)
 		}
 		return nil
@@ -83,9 +109,29 @@ func (r *Rootfs) InstallPackages(pkgs []string) error {
 
 	args := append([]string{r.Path, "apk", "add", "--no-cache"}, pkgs...)
 	cmd := exec.Command("chroot", args...)
-	cmd.Stdout = &apkWriter{}
-	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
+
+	var stderrBuf bytes.Buffer
+	if debugOutput {
+		// Debug: show apk's per-package install lines, styled.
+		cmd.Stdout = &apkWriter{}
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stderr = &stderrBuf
+	}
+
+	var sp *ui.Spinner
+	if !debugOutput {
+		sp = ui.NewSpinner(fmt.Sprintf("apk installing %d user packages...", len(pkgs)))
+		sp.Start()
+	}
+	err := cmd.Run()
+	if sp != nil {
+		sp.Stop()
+	}
+	if err != nil {
+		if stderrBuf.Len() > 0 {
+			return fmt.Errorf("apk add %s: %w\n%s", strings.Join(pkgs, " "), err, stderrBuf.String())
+		}
 		return fmt.Errorf("apk add %s: %w", strings.Join(pkgs, " "), err)
 	}
 

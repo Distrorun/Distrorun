@@ -35,8 +35,9 @@ func CheckDiskDeps() error {
 
 // Build creates a bootable qcow2 disk image from rootfsPath.
 // diskSize is passed directly to qemu-img (e.g. "4G", "8G").
-// outputPath should end in .qcow2.
-func Build(rootfsPath, outputPath, diskSize string) error {
+// outputPath should end in .qcow2. title sets GRUB_DISTRIBUTOR, the name
+// shown in the GRUB menu (and used as a prefix for kernel entries).
+func Build(rootfsPath, outputPath, diskSize, title string) error {
 	workDir := filepath.Dir(rootfsPath) // e.g. /tmp/distrorun-<name>
 	rawImg := filepath.Join(workDir, "disk.img")
 	mntDir := filepath.Join(workDir, "mnt")
@@ -145,7 +146,32 @@ func Build(rootfsPath, outputPath, diskSize string) error {
 		return fmt.Errorf("grub2-install: %w", err)
 	}
 
-	// 11. Generate grub.cfg
+	// 11. Write /etc/default/grub with the user-supplied OS name. We disable
+	// BLS so grub2-mkconfig honours GRUB_DISTRIBUTOR for the visible menu title.
+	if title == "" {
+		title = "DistroRun"
+	}
+	defaultGrub := fmt.Sprintf(`GRUB_TIMEOUT=5
+GRUB_DISTRIBUTOR="%s"
+GRUB_DEFAULT=saved
+GRUB_DISABLE_SUBMENU=true
+GRUB_TERMINAL_OUTPUT="console"
+GRUB_CMDLINE_LINUX="quiet selinux=0"
+GRUB_DISABLE_RECOVERY="true"
+GRUB_ENABLE_BLSCFG=false
+`, escapeForShell(title))
+	if err := os.WriteFile(filepath.Join(mntDir, "etc", "default", "grub"), []byte(defaultGrub), 0644); err != nil {
+		return fmt.Errorf("writing /etc/default/grub: %w", err)
+	}
+
+	// Rewrite BLS entries' `title` lines. kernel-install captured the original
+	// /etc/os-release at dnf-install time (still "Fedora Linux"), and Fedora's
+	// grub.d scripts read these files. Patch them so the menu shows our title.
+	if err := rewriteBLSTitles(filepath.Join(mntDir, "boot", "loader", "entries"), title); err != nil {
+		return fmt.Errorf("rewriting BLS titles: %w", err)
+	}
+
+	// 12. Generate grub.cfg
 	ui.SubStep("Generating grub.cfg...")
 	grubMkconfig := resolvebin(grubMkconfigCandidates)
 	cmd = exec.Command("chroot", mntDir, grubMkconfig, "-o", "/boot/grub2/grub.cfg")
@@ -199,6 +225,57 @@ func resolvebin(candidates []string) string {
 		}
 	}
 	return ""
+}
+
+// escapeForShell escapes characters that would break out of a double-quoted
+// shell string in /etc/default/grub.
+func escapeForShell(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`")
+	return r.Replace(s)
+}
+
+// rewriteBLSTitles replaces the `title …` line in every BLS entry under entriesDir
+// with `title <newTitle> (<kver>)`. Missing dir is not an error — non-Fedora or
+// non-BLS-using installs simply have nothing to patch.
+func rewriteBLSTitles(entriesDir, newTitle string) error {
+	entries, err := os.ReadDir(entriesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
+			continue
+		}
+		p := filepath.Join(entriesDir, e.Name())
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		lines := strings.Split(string(data), "\n")
+		var kver string
+		for _, l := range lines {
+			if strings.HasPrefix(l, "version ") {
+				kver = strings.TrimSpace(strings.TrimPrefix(l, "version "))
+				break
+			}
+		}
+		for i, l := range lines {
+			if strings.HasPrefix(l, "title ") {
+				if kver != "" {
+					lines[i] = fmt.Sprintf("title %s (%s)", newTitle, kver)
+				} else {
+					lines[i] = "title " + newTitle
+				}
+			}
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // unmountAll unmounts everything under dir in reverse (deepest first) order.

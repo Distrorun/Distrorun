@@ -1,13 +1,13 @@
 version: "1"
-name: "MyFedoraOS"
+name: "OsTestEmsi"
 
 distro:
   base: fedora
-  type: server   # "server" (default) or "workstation" (adds GNOME desktop)
+  type: workstation   
 
 users:
   - name: admin
-    password: changeme
+    password: admin123
   - name: root
     password: toor
 
@@ -18,7 +18,11 @@ packages:
 
 services:
   enable:
+    - NetworkManager
+    - gdm             
     - sshd
 
 build:
+  output: disk         
+  disk_size: 20G       
   sbom: false

@@ -1,0 +1,36 @@
+version: "1"
+name: databases
+
+distro:
+  base: alpine
+
+packages:
+  - postgresql
+  - postgresql-client
+  - postgresql-contrib
+  - mariadb
+  - mariadb-client
+  - mariadb-server-utils
+  - redis
+  - util-linux 
+  - tzdata
+  - vim
+  - curl
+
+users:
+  - name: dbadmin
+  password: DBPassword123
+  - name: postgres
+  password: postgres_pass
+  - name: mysql
+  password: mysql_pass
+
+services:
+  enable:
+    - postgresql
+    - mariadb
+    - redis
+    - networking
+
+build:
+  sbom: true

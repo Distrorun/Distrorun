@@ -1,0 +1,23 @@
+version: "1.0"
+name: dbmaxOS
+
+distro:
+  base: alpine
+
+packages:
+  - mysql-server
+  - postgresql-server
+  - redis-server
+
+users:
+  - name: root
+  - password: dbmax123
+
+services:
+  enable:
+    - mysql
+    - postgresql
+    - redis
+
+build:
+  sbom: false

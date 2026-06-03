@@ -13,8 +13,9 @@ var grub2MkimageCandidates = []string{"grub2-mkimage", "grub-mkimage"}
 
 // SetupGrub creates the GRUB2 BIOS bootloader staging directory.
 // It copies the kernel and initramfs from the rootfs, generates the El Torito
-// boot image with grub2-mkimage, and writes grub.cfg.
-func SetupGrub(rootfsPath, stagingDir string, kernelFiles KernelFiles) error {
+// boot image with grub2-mkimage, and writes grub.cfg. title is the human-readable
+// name shown in the GRUB menu.
+func SetupGrub(rootfsPath, stagingDir string, kernelFiles KernelFiles, title string) error {
 	grubDir := filepath.Join(stagingDir, "boot", "grub2", "i386-pc")
 	bootDir := filepath.Join(stagingDir, "boot")
 
@@ -44,7 +45,7 @@ func SetupGrub(rootfsPath, stagingDir string, kernelFiles KernelFiles) error {
 	}
 
 	// Write grub.cfg
-	cfg := grubCfg(kernelFiles.Version)
+	cfg := grubCfg(kernelFiles.Version, title)
 	if err := os.WriteFile(filepath.Join(stagingDir, "boot", "grub2", "grub.cfg"), []byte(cfg), 0644); err != nil {
 		return fmt.Errorf("writing grub.cfg: %w", err)
 	}
@@ -85,16 +86,37 @@ func grub2Mkimage(outputPath string) error {
 	return cmd.Run()
 }
 
-// grubCfg returns the grub.cfg content for live CD boot.
-func grubCfg(kver string) string {
+// ImgGrubCfg returns the grub.cfg for a USB/IMG live boot (partition-based, not El Torito).
+// title is the menu entry label.
+func ImgGrubCfg(kver, title string) string {
+	if title == "" {
+		title = "DistroRun Live"
+	}
 	return fmt.Sprintf(`set timeout=5
 set default=0
 
-menuentry "DistroRun Live" {
+menuentry "%s" {
+    search --label --set=root DISTRORUN_BOOT
     linux  /boot/vmlinuz-%s quiet selinux=0
     initrd /boot/initramfs-%s.img
 }
-`, kver, kver)
+`, title, kver, kver)
+}
+
+// grubCfg returns the grub.cfg content for live CD boot.
+// title is the menu entry label.
+func grubCfg(kver, title string) string {
+	if title == "" {
+		title = "DistroRun Live"
+	}
+	return fmt.Sprintf(`set timeout=5
+set default=0
+
+menuentry "%s" {
+    linux  /boot/vmlinuz-%s quiet selinux=0
+    initrd /boot/initramfs-%s.img
+}
+`, title, kver, kver)
 }
 
 // findGrub2Mkimage searches PATH for the grub2-mkimage binary.

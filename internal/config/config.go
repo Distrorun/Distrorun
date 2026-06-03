@@ -38,9 +38,10 @@ type Services struct {
 
 // Build controls engine behaviour during artifact generation.
 type Build struct {
-	SBOM     bool   `yaml:"sbom"`
-	Output   string `yaml:"output"`    // "iso" (default) or "disk" (qcow2)
-	DiskSize string `yaml:"disk_size"` // e.g. "8G"; defaults to "4G"
+	SBOM        bool   `yaml:"sbom"`
+	Output      string `yaml:"output"`       // "iso" (default), "disk" (qcow2), or "img" (USB image with persistence)
+	DiskSize    string `yaml:"disk_size"`    // e.g. "8G"; defaults to "4G" (disk mode only)
+	PersistSize string `yaml:"persist_size"` // e.g. "2G"; defaults to "2G" (img mode only)
 }
 
 // SBOMEnabled returns true if the user requested SBOM generation.
@@ -50,8 +51,11 @@ func (c *Config) SBOMEnabled() bool {
 
 // OutputMode returns the resolved output mode, defaulting to "iso".
 func (c *Config) OutputMode() string {
-	if c.Build != nil && c.Build.Output == "disk" {
-		return "disk"
+	if c.Build != nil {
+		switch c.Build.Output {
+		case "disk", "img":
+			return c.Build.Output
+		}
 	}
 	return "iso"
 }
@@ -62,6 +66,14 @@ func (c *Config) DiskSize() string {
 		return c.Build.DiskSize
 	}
 	return "4G"
+}
+
+// PersistSize returns the persistence partition size, defaulting to "2G".
+func (c *Config) PersistSize() string {
+	if c.Build != nil && c.Build.PersistSize != "" {
+		return c.Build.PersistSize
+	}
+	return "2G"
 }
 
 // LoadConfig reads a YAML file at path and returns a parsed Config.

@@ -1,0 +1,26 @@
+version: "1"
+name: minimal-go-fedora-dev
+distro:
+  base: fedora
+  type: workstation
+packages:
+  - git
+  - gcc
+  - make
+  - go
+  - makeutils
+  - vim
+  - curl
+services:
+  enable:
+    - NetworkManager
+    - sshd
+build:
+  output: disk
+  disk_size: 20G
+  sbom: true
+users:
+  - name: devuser
+    password: devpass123
+  - name: root
+    password: rootpass123

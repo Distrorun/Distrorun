@@ -43,8 +43,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Build != nil && c.Build.Output != "" &&
-		c.Build.Output != "iso" && c.Build.Output != "disk" {
-		errs = append(errs, fmt.Sprintf("build.output %q is invalid: must be \"iso\" or \"disk\"", c.Build.Output))
+		c.Build.Output != "iso" && c.Build.Output != "disk" && c.Build.Output != "img" {
+		errs = append(errs, fmt.Sprintf("build.output %q is invalid: must be \"iso\", \"disk\", or \"img\"", c.Build.Output))
 	}
 
 	if len(errs) > 0 {

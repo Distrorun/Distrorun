@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -181,6 +182,78 @@ func SubStep(msg string) {
 	fmt.Printf("  %s %s\n", ArrowStyle.Render("▸"), SubStepStyle.Render(msg))
 }
 
+// ── Spinner ──────────────────────────────────────────────────────────────────
+
+// Spinner shows a rotating animation alongside a message until Stop is called.
+// Safe to start/stop multiple times; not safe to start the same Spinner twice
+// concurrently.
+type Spinner struct {
+	msg     string
+	stop    chan struct{}
+	done    chan struct{}
+	mu      sync.Mutex
+	running bool
+}
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// NewSpinner creates a spinner with the given message.
+func NewSpinner(msg string) *Spinner {
+	return &Spinner{msg: msg}
+}
+
+// Start begins the animation loop on a goroutine.
+func (s *Spinner) Start() {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return
+	}
+	s.running = true
+	s.stop = make(chan struct{})
+	s.done = make(chan struct{})
+	s.mu.Unlock()
+
+	go func() {
+		defer close(s.done)
+		i := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stop:
+				// Clear the spinner line on exit
+				fmt.Fprint(os.Stderr, "\r\033[K")
+				return
+			case <-ticker.C:
+				frame := ArrowStyle.Render(spinnerFrames[i%len(spinnerFrames)])
+				fmt.Fprintf(os.Stderr, "\r  %s %s", frame, SubStepStyle.Render(s.msg))
+				i++
+			}
+		}
+	}()
+}
+
+// Stop halts the animation. Safe to call multiple times.
+func (s *Spinner) Stop() {
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return
+	}
+	s.running = false
+	close(s.stop)
+	s.mu.Unlock()
+	<-s.done
+}
+
+// Update changes the message shown next to the spinner.
+func (s *Spinner) Update(msg string) {
+	s.mu.Lock()
+	s.msg = msg
+	s.mu.Unlock()
+}
+
 // Detail prints a dimmed detail line.
 func Detail(msg string) {
 	fmt.Printf("    %s\n", DimTextStyle.Render(msg))
@@ -217,7 +290,7 @@ func UserItem(name, role string) {
 // ServiceItem prints a styled service line.
 func ServiceItem(name string) {
 	svc := PkgNameStyle.Render(name)
-	fmt.Printf("    %s %s → %s\n", DimTextStyle.Render("•"), svc, DimTextStyle.Render("default runlevel"))
+	fmt.Printf("    %s %s → %s\n", DimTextStyle.Render("•"), svc, DimTextStyle.Render("enabled at boot"))
 }
 
 // ── Build Summary ────────────────────────────────────────────────────────────
@@ -260,6 +333,14 @@ func PrintUsage(version string) {
 	fmt.Println()
 	fmt.Println("  " + CommandStyle.Render("distrorun build") + " " + ArgStyle.Render("<config.yaml>") + " " + ArgStyle.Render("[-o output.iso]"))
 	fmt.Println("  " + CommandStyle.Render("distrorun test") + "  " + ArgStyle.Render("<iso-file>") + " " + ArgStyle.Render("[-r RAM_MB] [-d DISK_SIZE]"))
+	fmt.Println()
+	fmt.Println(lipgloss.NewStyle().Bold(true).Foreground(White).Render("Registry:"))
+	fmt.Println()
+	fmt.Println("  " + CommandStyle.Render("distrorun login") + "  " + ArgStyle.Render("[--server URL]"))
+	fmt.Println("  " + CommandStyle.Render("distrorun logout"))
+	fmt.Println("  " + CommandStyle.Render("distrorun push") + "  " + ArgStyle.Render("<config.yaml>") + " " + ArgStyle.Render("[--sbom <sbom.spdx.json>]"))
+	fmt.Println("  " + CommandStyle.Render("distrorun pull") + "  " + ArgStyle.Render("<name>"))
+	fmt.Println()
 	fmt.Println("  " + CommandStyle.Render("distrorun version"))
 	fmt.Println("  " + CommandStyle.Render("distrorun help"))
 	fmt.Println()

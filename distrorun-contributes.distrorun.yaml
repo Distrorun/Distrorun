@@ -1,0 +1,42 @@
+version: "1"
+name: distrorun-contributes
+
+distro:
+  base: fedora
+  type: workstation
+
+packages:
+  - i3
+  - i3status
+  - i3lock
+  - dmenu
+  - xterm
+  - xsetroot
+  - golang
+  - git
+  - make
+  - gcc
+  - systemd-devel
+  - skopeo
+  - buildah
+  - qemu-img
+  - strace
+  - perf
+  - bpftrace
+  - htop
+  - neovim
+  - alacritty
+  - kitty
+
+users:
+  - name: distroruners
+    password: changeme
+
+services:
+  enable:
+    - NetworkManager
+    - sshd
+    - dbus
+
+build:
+  sbom: true
